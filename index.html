@@ -2,13 +2,176 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0f172a" />
   <link rel="manifest" href="manifest.webmanifest" />
   <title>PT Exercise Timer</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --shadow: 0 10px 25px rgba(0,0,0,.35);
+      --radius: 18px;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      -webkit-font-smoothing: antialiased;
+      background: radial-gradient(60vmax 60vmax at 90% -10%, rgba(34,197,94,.08), transparent 60%),
+                  radial-gradient(50vmax 50vmax at -10% 110%, rgba(59,130,246,.08), transparent 60%),
+                  var(--bg);
+      color: var(--text);
+    }
+    .wrap { min-height: 100%; display: grid; grid-template-rows: auto 1fr auto; }
+    header { padding: env(safe-area-inset-top) 16px 8px; text-align: center; }
+    header h1 { margin: 8px 0 0; font-size: clamp(18px, 4vw, 22px); font-weight: 700; }
+    .card { margin: 12px auto; width: min(680px, 94vw); background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; }
+    .timer { display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; font-weight: 800; font-size: clamp(40px, 13vw, 80px); padding: 8px 0 10px; user-select: none; }
+    .controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 6px; }
+    button { appearance: none; border: 0; border-radius: calc(var(--radius) - 6px); padding: 14px 18px; font-size: clamp(16px, 4vw, 22px); font-weight: 700; color: #0b0f1a; box-shadow: 0 8px 18px rgba(0,0,0,.25); transition: transform .06s ease; }
+    button:active { transform: translateY(2px) scale(.99); }
+    button[disabled] { opacity: .55; pointer-events: none; }
+    .start { background: #bbf7d0; }
+    .stop  { background: #fecaca; }
+    .reset { background: #e5e7eb; }
+    .image-wrap { margin-top: 16px; border-radius: calc(var(--radius) - 6px); overflow: hidden; background: #0b1220; border: 1px solid rgba(255,255,255,.06); }
+    .image-wrap img { display: block; width: 100%; height: auto; }
+    .caption { font-size: clamp(12px, 3vw, 14px); color: var(--muted); text-align: center; margin-top: 6px; }
+    footer { padding: 12px; text-align: center; color: var(--muted); font-size: 12px; }
+  </style>
 </head>
 <body>
-  <h1>PT Exercise Timer</h1>
-  <p>Simple PWA timer with 5-second countdown and reset.</p>
-  <script src="sw.js"></script>
+  <div class="wrap">
+    <header><h1>PT Exercise Timer</h1></header>
+
+    <main class="card">
+      <div class="timer"><span id="time">00:00.0</span></div>
+
+      <div class="controls">
+        <button id="startBtn" class="start">Start</button>
+        <button id="stopBtn" class="stop" disabled>Stop</button>
+        <button id="resetBtn" class="reset" disabled>Reset</button>
+      </div>
+
+      <div class="image-wrap">
+        <!-- Replace the image URL below with your own hosted photo -->
+        <img id="exerciseImage" src="https://via.placeholder.com/600x400" alt="Exercise demonstration" />
+      </div>
+      <div class="caption" id="caption">Example: Standing balance – feet hip-width apart</div>
+    </main>
+
+    <footer>
+      v1.1 • Mobile Safari & Chrome • 5s countdown + beep + Reset • Installable (PWA)
+    </footer>
+  </div>
+
+  <script>
+    (function(){
+      const timeEl = document.getElementById('time');
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const resetBtn = document.getElementById('resetBtn');
+
+      let startTs = 0, elapsed = 0, rafId = null, countdownId = null, remaining = 0;
+
+      // Audio beep
+      let ac = null;
+      function ensureAudio(){
+        try{ if(!ac) ac = new (window.AudioContext || window.webkitAudioContext)(); if(ac.state==='suspended') ac.resume(); }catch(e){}
+      }
+      function beep(freq=880, dur=120, type='sine', gain=0.04){
+        if(!ac) return;
+        const t0 = ac.currentTime;
+        const o = ac.createOscillator();
+        const g = ac.createGain();
+        o.type = type; o.frequency.value = freq;
+        g.gain.value = gain; g.gain.setTargetAtTime(0.0001, t0 + dur/1000, 0.02);
+        o.connect(g).connect(ac.destination);
+        o.start(); o.stop(t0 + (dur+60)/1000);
+      }
+
+      function fmt(ms){
+        const t = Math.max(0, ms|0);
+        const cs = Math.floor((t % 1000) / 100);
+        const s  = Math.floor(t / 1000) % 60;
+        const m  = Math.floor(t / 60000);
+        return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${cs}`;
+      }
+      function tick(){
+        const now = performance.now();
+        const ms = now - startTs + elapsed;
+        timeEl.textContent = fmt(ms);
+        rafId = requestAnimationFrame(tick);
+      }
+
+      function start(){
+        if(rafId || countdownId) return;
+        ensureAudio();
+        remaining = 5000;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        resetBtn.disabled = true;
+        timeEl.textContent = fmt(remaining);
+        beep(880,120);
+        countdownId = setInterval(()=>{
+          remaining -= 100;
+          if(remaining <= 0){
+            clearInterval(countdownId); countdownId = null;
+            timeEl.textContent = '00:00.0';
+            beep(1046,250,'square');
+            startTs = performance.now();
+            rafId = requestAnimationFrame(tick);
+            resetBtn.disabled = false;
+          } else {
+            timeEl.textContent = fmt(remaining);
+            if(remaining % 1000 === 0) beep(880,120);
+          }
+        }, 100);
+      }
+
+      function stop(){
+        if(countdownId){
+          clearInterval(countdownId); countdownId = null;
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+          resetBtn.disabled = false;
+          return;
+        }
+        if(!rafId) return;
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        elapsed += performance.now() - startTs;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        resetBtn.disabled = false;
+      }
+
+      function reset(){
+        if(countdownId){ clearInterval(countdownId); countdownId = null; }
+        if(rafId){ cancelAnimationFrame(rafId); rafId = null; }
+        elapsed = 0; startTs = 0; remaining = 0;
+        timeEl.textContent = fmt(0);
+        stopBtn.disabled = true;
+        startBtn.disabled = false;
+        resetBtn.disabled = true;
+      }
+
+      startBtn.addEventListener('click', start);
+      stopBtn.addEventListener('click', stop);
+      resetBtn.addEventListener('click', reset);
+
+      // Register service worker for install support
+      if('serviceWorker' in navigator){
+        window.addEventListener('load', ()=>navigator.serviceWorker.register('./sw.js').catch(console.warn));
+      }
+
+      timeEl.textContent = fmt(0);
+    })();
+  </script>
 </body>
 </html>
